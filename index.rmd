@@ -1,0 +1,78 @@
+---
+title: "Practical Machine Learning Prediction Assignment"
+author: "Helmars"
+date: "Thursday, July 24, 2014"
+output: html_document
+---
+The goal of this assignment is to build a machine learning algorithm able to predict if weight lifting exercise is done properly. Input data comes from various electronic sensors and results are split in 5 classes depending on mistakes made by person performing weight lifting exercise. The dataset used for this assignment can be found at <http://groupware.les.inf.puc-rio.br/har>. More information about Practical Machine Learning course can be found at <https://www.coursera.org/course/predmachlearn>.
+
+First, let's load libraries and data. I'm using *doSNOW* package to operate parallel processes.
+```{r,warning=FALSE,message=FALSE}
+library(caret)
+library(doSNOW)
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv","pml-training.csv",method="curl")
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv","pml-testing.csv",method="curl")
+data<-read.csv("pml-training.csv")
+dim(data)
+```
+It turns out that many columns are missing data for most samples. Let's calculate the number of *NA* values by column:
+```{r}
+NA_Count<-apply(is.na(data),2,sum)
+```
+Next, make a vector of column data types:
+```{r}
+columnTypes<-sapply(data,class)
+```
+Then make another vector containing logical values indicating that column doesn't have *NA* values and contains *numeric* or *integer* data types:
+```{r}
+predictorColumns<-NA_Count==0&(columnTypes=="numeric"|columnTypes=="integer")
+```
+I'm also taking out columns containing time or data entry numbers, because those columns shouldn't affect the outcome:
+```{r}
+predictorColumns[c("X","raw_timestamp_part_1","raw_timestamp_part_2","num_window")]<-FALSE
+```
+Now I can build a formula for *train* function:
+```{r}
+predictorNames<-names(predictorColumns[predictorColumns])
+f<-as.formula(paste("classe~",paste(predictorNames,collapse="+"),sep=""))
+f
+```
+I'm putting 1/4 of data aside for final testing. I'm using 4-fold cross validation, because the CPU I'm using has 4 cores. This allows to perform training in parallel and receive results in reasonable time.
+```{r}
+inTrain<-createDataPartition(y=data$classe,p=0.75,list=FALSE)
+training<-data[inTrain,];
+testing<-data[-inTrain,];
+cvSettings<-trainControl(method="cv",number=4)
+```
+The following creates 4 parallel processes for use with *train* function:
+```{r}
+cl<-makeCluster(4)
+registerDoSNOW(cl)
+```
+The next line trains machine learning model using previously selected predictors, training data and cross validation settings. The chosen method is random forest.
+```{r,warning=FALSE,message=FALSE}
+modelFit<-train(f,data=training,method="rf",trControl=cvSettings)
+modelFit
+```
+The model looks very impressive on training data. Let's see if the same is also true for test data. Parallel processes can be stopped now.
+```{r}
+stopCluster(cl)
+prediction<-predict(modelFit,newdata=testing)
+cm<-confusionMatrix(prediction,testing$classe)
+cm
+```
+Out of sample accuracy is `r cm$overall["Accuracy"]*100`%, out of sample error is `r 100-cm$overall["Accuracy"]*100`%. For practical purposes this accuracy is acceptable, because weight lifting is repetitive exercise and there is no serious impact, if <1% of repetitions are not recognized correctly.
+
+The final step is to prepare data for automated grading. These 20 samples are probably hand picked, so it is reasonable to expect 100% accuracy. All submitted values were correct.
+```{r}
+testData<-read.csv("pml-testing.csv")
+answers<-predict(modelFit,newdata=testData)
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+pml_write_files(answers)
+```
